@@ -1,23 +1,23 @@
 const express = require('express');
-const serverless = require('serverless-http');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
 const app = express();
 const router = express.Router();
-const PORT = 3000;
+// Render provides the PORT environment variable
+const PORT = process.env.PORT || 3000; 
 const SECRET_KEY = 'your_super_secret_jwt_key'; // CHANGE THIS IN A REAL APP
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// In-memory "database" to start. Replace with a real database later (e.g., MongoDB).
+// In-memory "database" to start.
 let users = {};
 let promoCodes = {};
 let siteStatus = { isMaintenanceMode: false, message: "We'll be back soon!" };
 
-// ADMIN login details (for this example, replace with a real admin user)
+// ADMIN login details
 const ADMIN_USER = { username: 'admin', password: 'admin123' };
 
 // Middleware to verify JWT token
@@ -36,6 +36,7 @@ const authenticateToken = (req, res, next) => {
 
 // Middleware to check for admin role
 const checkAdminRole = (req, res, next) => {
+    // Note: In a real app, you'd check a role property from the token/database
     if (req.user.username !== 'admin') {
         return res.status(403).json({ error: 'Access denied. Admin privileges required.' });
     }
@@ -50,11 +51,12 @@ router.post('/auth/register', (req, res) => {
         return res.status(409).json({ error: 'Username already exists.' });
     }
     users[username] = {
-        password: password,
+        password: password, // In a real app, hash this password!
         chats: {},
         unlockedModels: ["G-4 Fusion"],
         activeModel: "G-4 Fusion",
-        avatarColor: `hsl(${Math.random() * 360}, 50%, 50%)`
+        avatarColor: `hsl(${Math.random() * 360}, 50%, 50%)`,
+        role: 'user'
     };
     const token = jwt.sign({ username: username, role: 'user' }, SECRET_KEY);
     res.json({ token, user: users[username] });
@@ -66,7 +68,7 @@ router.post('/auth/login', (req, res) => {
     // Check for admin
     if (username === ADMIN_USER.username && password === ADMIN_USER.password) {
         const token = jwt.sign({ username: ADMIN_USER.username, role: 'admin' }, SECRET_KEY);
-        return res.json({ token, user: { username: 'admin' } });
+        return res.json({ token, user: { username: 'admin', role: 'admin' } });
     }
 
     // Check for regular user
@@ -78,10 +80,15 @@ router.post('/auth/login', (req, res) => {
     res.status(401).json({ error: 'Invalid username or password.' });
 });
 
+// --- PUBLIC STATUS ENDPOINT ---
+router.get('/status', (req, res) => {
+    res.json(siteStatus);
+});
+
+
 // --- ADMIN ENDPOINTS (SECURED) ---
 
 router.get('/admin/dashboard', authenticateToken, checkAdminRole, (req, res) => {
-    // In a real app, you would fetch this from the database
     const userCount = Object.keys(users).length;
     const totalChats = Object.values(users).reduce((acc, user) => acc + Object.keys(user.chats || {}).length, 0);
     const activeCodes = Object.keys(promoCodes).length;
@@ -129,7 +136,10 @@ router.post('/user/chats', authenticateToken, (req, res) => {
     if (!user.chats[chatId]) {
         user.chats[chatId] = { id: chatId, timestamp: Date.now(), title: 'New Chat', messages: [] };
     }
-    user.chats[chatId].messages.push(message);
+    // Prevent adding empty messages
+    if(message && Object.keys(message).length > 0) {
+        user.chats[chatId].messages.push(message);
+    }
     res.status(201).json({ message: 'Message added.', chats: user.chats });
 });
 
@@ -152,4 +162,7 @@ router.post('/user/redeem', authenticateToken, (req, res) => {
 
 app.use('/api', router);
 
-module.exports.handler = serverless(app);
+// --- THIS IS THE IMPORTANT PART FOR RENDER ---
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
