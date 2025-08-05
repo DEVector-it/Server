@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 
 const app = express();
 const router = express.Router();
 const PORT = process.env.PORT || 3000; 
 const SECRET_KEY = 'your_super_secret_jwt_key_that_is_long_and_secure';
+const saltRounds = 10; // For bcrypt hashing
 
 // Middleware
 app.use(cors());
@@ -16,7 +18,15 @@ let users = {};
 let promoCodes = {};
 let siteStatus = { isMaintenanceMode: false, message: "We'll be back soon!" };
 
+// ADMIN login details
 const ADMIN_USER = { username: 'admin', password: 'admin123' };
+// Pre-hash the admin password on startup for consistency (in a real app, this would be seeded)
+bcrypt.hash(ADMIN_USER.password, saltRounds, (err, hash) => {
+    if (!err) {
+        ADMIN_USER.hashedPassword = hash;
+    }
+});
+
 
 // --- Security Middleware ---
 const authenticateToken = (req, res, next) => {
@@ -39,35 +49,61 @@ const checkAdminRole = (req, res, next) => {
 };
 
 // --- AUTHENTICATION ENDPOINTS ---
-router.post('/auth/register', (req, res) => {
+router.post('/auth/register', async (req, res) => {
     const { username, password } = req.body;
-    if (users[username]) {
+    if (users[username] || username === 'admin') {
         return res.status(409).json({ error: 'Username already exists.' });
     }
-    users[username] = {
-        password: password, // In a real app, HASH this password!
-        chats: {},
-        unlockedModels: ["G-4 Fusion"],
-        activeModel: "G-4 Fusion",
-        avatarColor: `hsl(${Math.random() * 360}, 50%, 50%)`,
-        role: 'user'
-    };
-    const token = jwt.sign({ username: username, role: 'user' }, SECRET_KEY);
-    res.json({ token, user: users[username] });
+    
+    try {
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        users[username] = {
+            password: hashedPassword,
+            chats: {},
+            unlockedModels: ["G-4 Fusion"],
+            activeModel: "G-4 Fusion",
+            avatarColor: `hsl(${Math.random() * 360}, 50%, 50%)`,
+            role: 'user'
+        };
+        const token = jwt.sign({ username: username, role: 'user' }, SECRET_KEY);
+        // Return user object without the password hash
+        const { password: _, ...userToReturn } = users[username];
+        res.status(201).json({ token, user: {username, ...userToReturn} });
+    } catch (error) {
+        res.status(500).json({ error: 'Error creating user.' });
+    }
 });
 
-router.post('/auth/login', (req, res) => {
+router.post('/auth/login', async (req, res) => {
     const { username, password } = req.body;
-    if (username === ADMIN_USER.username && password === ADMIN_USER.password) {
-        const token = jwt.sign({ username: ADMIN_USER.username, role: 'admin' }, SECRET_KEY);
-        return res.json({ token, user: { username: 'admin', role: 'admin' } });
+    
+    try {
+        // Check for admin
+        if (username === ADMIN_USER.username) {
+            const match = await bcrypt.compare(password, ADMIN_USER.hashedPassword);
+            if (match) {
+                const token = jwt.sign({ username: ADMIN_USER.username, role: 'admin' }, SECRET_KEY);
+                return res.json({ token, user: { username: 'admin', role: 'admin' } });
+            }
+        }
+
+        // Check for regular user
+        const user = users[username];
+        if (user) {
+            const match = await bcrypt.compare(password, user.password);
+            if (match) {
+                const token = jwt.sign({ username: username, role: 'user' }, SECRET_KEY);
+                const { password: _, ...userToReturn } = user;
+                return res.json({ token, user: {username, ...userToReturn} });
+            }
+        }
+
+        res.status(401).json({ error: 'Invalid username or password.' });
+    } catch (error) {
+        res.status(500).json({ error: 'Error during login.' });
     }
-    if (users[username] && users[username].password === password) {
-        const token = jwt.sign({ username: username, role: 'user' }, SECRET_KEY);
-        return res.json({ token, user: users[username] });
-    }
-    res.status(401).json({ error: 'Invalid username or password.' });
 });
+
 
 // --- PUBLIC STATUS ENDPOINT ---
 router.get('/status', (req, res) => {
@@ -137,7 +173,8 @@ router.get('/user/data', authenticateToken, (req, res) => {
     if (!user) {
         return res.status(404).json({ error: 'User not found.' });
     }
-    res.json(user);
+    const { password, ...userToReturn } = user;
+    res.json({username: req.user.username, ...userToReturn});
 });
 
 router.post('/user/chats', authenticateToken, (req, res) => {
@@ -174,6 +211,4 @@ app.use('/api', router);
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
-
-
 
